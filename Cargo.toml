@@ -1,0 +1,6 @@
+[workspace]
+
+members = [
+    "workflow-rs",
+    "workflow-rs-macros",
+]
