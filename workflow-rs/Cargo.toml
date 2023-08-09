@@ -12,10 +12,10 @@ evmap = "10.0"
 futures-util = "0.3"
 serde = "1.0"
 serde_json = "1.0"
-temporal-client = { git = "https://github.com/temporalio/sdk-core.git", rev = "81ece42e3a4fda1b019d9a5d8d263916f73726a6", optional = true }
-temporal-sdk = { git = "https://github.com/temporalio/sdk-core.git", rev = "81ece42e3a4fda1b019d9a5d8d263916f73726a6", optional = true }
-temporal-sdk-core = { git = "https://github.com/temporalio/sdk-core.git", rev = "81ece42e3a4fda1b019d9a5d8d263916f73726a6", optional = true }
-temporal-sdk-core-api = { git = "https://github.com/temporalio/sdk-core.git", rev = "81ece42e3a4fda1b019d9a5d8d263916f73726a6", optional = true }
+temporal-client = { git = "https://github.com/temporalio/sdk-core.git", rev = "64774d67793694d432ebfd64638c4a806785124c", optional = true }
+temporal-sdk = { git = "https://github.com/temporalio/sdk-core.git", rev = "64774d67793694d432ebfd64638c4a806785124c", optional = true }
+temporal-sdk-core = { git = "https://github.com/temporalio/sdk-core.git", rev = "64774d67793694d432ebfd64638c4a806785124c", optional = true }
+temporal-sdk-core-api = { git = "https://github.com/temporalio/sdk-core.git", rev = "64774d67793694d432ebfd64638c4a806785124c", optional = true }
 tokio = "1.0"
 tracing = "0.1"
 workflow-rs-macros = { path = "../workflow-rs-macros", optional = true }
