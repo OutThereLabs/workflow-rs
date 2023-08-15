@@ -120,7 +120,7 @@ impl WorkflowRegistry {
         timeout: Duration,
     ) -> Result<(), Error> {
         match &self.executor {
-            WorkflowExecutor::InMemory(_storage) => Ok(()),
+            WorkflowExecutor::InMemory(storage) => storage.execute_all().await,
             #[cfg(feature = "temporal")]
             WorkflowExecutor::Temporal { client, .. } => {
                 use tokio::time::sleep;
@@ -288,14 +288,15 @@ impl WorkflowExecutor {
         registry: Arc<WorkflowRegistry>,
     ) -> Result<(), Error> {
         match &self {
-            Self::InMemory(_storage) => {
+            Self::InMemory(storage) => {
                 let workflow_factory = registry
                     .workflow_factories
                     .get(name)
                     .ok_or_else(|| anyhow!("Workflow {name} not found"))?;
                 let context = WorkflowContext::new(TaskLauncher::InMemory(registry.clone()));
                 let workflow = workflow_factory.builder(args);
-                workflow.execute(context).await?;
+                let handle = tokio::spawn(async move { workflow.execute(context).await });
+                storage.add_task(handle);
 
                 Ok(())
             }
