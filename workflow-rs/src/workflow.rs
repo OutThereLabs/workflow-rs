@@ -14,10 +14,16 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 use temporal_client::WorkflowClientTrait;
-use temporal_sdk::{ActivityOptions, LocalActivityOptions, WfContext, Worker};
+use temporal_sdk::{ActivityOptions, ChildWorkflowOptions, LocalActivityOptions, WfContext, Worker};
 use temporal_sdk_core::protos::coresdk::activity_result::activity_resolution;
 use temporal_sdk_core::protos::coresdk::{activity_result, AsJsonPayloadExt};
 use temporal_sdk_core_api::telemetry::{Logger, OtelCollectorOptions, TraceExporter};
+use temporal_sdk_core::protos::{
+    coresdk::{
+        child_workflow::{child_workflow_result::Status as ChildWorkflowResultStatus},
+    }
+};
+use uuid::Uuid;
 
 #[derive(Clone)]
 pub enum WorkflowWorker {
@@ -108,12 +114,13 @@ pub enum TaskLauncher {
 
 #[derive(Clone)]
 pub struct WorkflowContext {
+    pub workflow_id: String,
     task_launcher: TaskLauncher,
 }
 
 impl<'a> WorkflowContext {
-    pub fn new(task_launcher: TaskLauncher) -> Self {
-        Self { task_launcher }
+    pub fn new(workflow_id: String, task_launcher: TaskLauncher) -> Self {
+        Self { workflow_id, task_launcher }
     }
 
     pub async fn task<F: TaskFactory, I: serde::Serialize, O: serde::de::DeserializeOwned>(
@@ -140,6 +147,17 @@ impl<'a> WorkflowContext {
         input: I,
     ) -> Result<serde_json::Value, Error> {
         self.local_task_by_name(factory.name(), serde_json::json!(input))
+            .await
+    }
+
+    pub async fn child_workflow<D: ToString, F: WorkflowFactory, I: serde::Serialize>(
+        &self,
+        id: D,
+        factory: F,
+        input: Vec<I>,
+    ) -> Result<(), Error> {
+        let input_json = input.into_iter().map(|i| serde_json::json!(i)).collect();
+        self.child_workflow_by_name(id, factory.name(), input_json)
             .await
     }
 
@@ -176,6 +194,23 @@ impl<'a> WorkflowContext {
         }
     }
 
+    pub async fn child_workflow_by_name<T: ToString>(
+        &self,
+        id: T,
+        name: &'static str,
+        input: Vec<Value>,
+    ) -> Result<(), Error> {
+        match &self.task_launcher {
+            TaskLauncher::InMemory(registry) => {
+                Self::in_memory_child_workflow(id, name, input, registry.clone()).await
+            }
+            #[cfg(feature = "temporal")]
+            TaskLauncher::Temporal(context) => {
+                Self::temporal_child_workflow(id, name, input, context).await
+            }
+        }
+    }
+
     pub async fn sleep(&self, duration: Duration) {
         match &self.task_launcher {
             TaskLauncher::InMemory(_) => {
@@ -187,33 +222,6 @@ impl<'a> WorkflowContext {
             }
         }
     }
-
-    // pub async fn workflow<F: WorkflowFactory>(
-    //     &self,
-    //     id: String,
-    //     factory: F,
-    //     input: Vec<serde_json::Value>,
-    // ) -> Result<(), Error> {
-    //     self.workflow_by_name(id, factory.name(), input).await
-    // }
-    //
-    // pub async fn workflow_by_name(
-    //     &self,
-    //     id: String,
-    //     name: &'static str,
-    //     input: Vec<serde_json::Value>,
-    // ) -> Result<(), Error> {
-    //     match &self.task_launcher {
-    //         TaskLauncher::InMemory(registry) => {
-    //             let registry = registry.clone();
-    //             self.clone().in_memory_workflow(name, input, registry).await
-    //         }
-    //         #[cfg(feature = "temporal")]
-    //         TaskLauncher::Temporal(context) => {
-    //             Self::temporal_workflow(id, name, input, &context).await
-    //         }
-    //     }
-    // }
 
     async fn in_memory_task(
         name: &'static str,
@@ -232,22 +240,30 @@ impl<'a> WorkflowContext {
         }
     }
 
-    // async fn in_memory_workflow(
-    //     self,
-    //     name: &'static str,
-    //     input: Vec<Value>,
-    //     registry: Arc<WorkflowRegistry>,
-    // ) -> Result<(), Error> {
-    //     match registry.workflow_factories.get(name) {
-    //         Some(workflow) => {
-    //             let workflow = workflow.builder(vec![]);
-    //             let _ = workflow.handler.0(self, input).await?;
-    //             Ok(())
-    //         }
-    //         None => Err(anyhow!("No task registed for {name}")),
-    //     }
-    // }
-
+    async fn in_memory_child_workflow<T: ToString>(
+        id: T,
+        name: &'static str,
+        input: Vec<Value>,
+        registry: Arc<WorkflowRegistry>,
+    ) -> Result<(), Error> {
+        match registry.workflow_factories.get(name) {
+            Some(workflow) => {
+                registry.executor
+                    .clone()
+                    .start_workflow(
+                        id.to_string(),
+                        workflow.name(),
+                        workflow.queue_name(),
+                        input,
+                        registry
+                    )
+                    .await?;
+                Ok(())
+            }
+            None => Err(anyhow!("No task registed for {name}")),
+        }
+    }
+    
     #[cfg(feature = "temporal")]
     async fn temporal_task(
         name: &'static str,
@@ -308,32 +324,52 @@ impl<'a> WorkflowContext {
         }
     }
 
-    // #[cfg(feature = "temporal")]
-    // async fn temporal_workflow(
-    //     id: String,
-    //     name: &'static str,
-    //     input: Vec<Value>,
-    //     context: &'a WfContext,
-    // ) -> Result<(), Error> {
-    //     let workflow_options = ChildWorkflowOptions {
-    //         workflow_type: name.to_owned(),
-    //         workflow_id: id,
-    //         input: input
-    //             .iter()
-    //             .map(|value| value.as_json_payload().unwrap())
-    //             .collect(),
-    //         ..Default::default()
-    //     };
-    //     let result = context
-    //         .child_workflow(workflow_options)
-    //         .start(context)
-    //         .await;
-    //
-    //     match result.status {
-    //         ChildWorkflowStartStatus::Succeeded(_) => Ok(()),
-    //         other => Err(anyhow!("Task failed: {other:#?}")),
-    //     }
-    // }
+    #[cfg(feature = "temporal")]
+    async fn temporal_child_workflow<I: ToString>(
+        workflow_id: I,
+        name: &'static str,
+        input: Vec<Value>,
+        context: &'a WfContext,
+    ) -> Result<(), Error> {
+        let mut payloads = vec![];
+        for item in input {
+            payloads.push(item.as_json_payload()?);
+        }
+
+        let child_workflow_options = ChildWorkflowOptions{
+            workflow_id: workflow_id.to_string(),
+            workflow_type: name.to_string(),
+            input: payloads,
+            ..Default::default()
+        };
+        let result = context.child_workflow(child_workflow_options).start(context).await;
+
+        if let Some(future) = result.into_started() {
+            let result = future.result().await;
+
+            match result.status {
+                Some(status) => {
+                    match status {
+                        ChildWorkflowResultStatus::Completed(result) => {
+                            tracing::debug!("Result: {result:?}");
+                            Ok(())
+                        },
+                        ChildWorkflowResultStatus::Failed(error) => {
+                            Err(anyhow!("Failed: {error:?}"))
+                        }
+                        ChildWorkflowResultStatus::Cancelled(error) => {
+                            Err(anyhow!("Cancelled: {error:?}"))
+                        }
+                    }
+                },
+                None => {
+                    Err(anyhow!("Could not submit client workflow"))
+                }
+            }
+        } else {
+            Err(anyhow!("Could not submit client workflow"))
+        }
+    }
 }
 
 pub trait WorkflowHandler {
@@ -421,7 +457,8 @@ impl TemporalWorkflowAdapter {
             .map(|payload| serde_json::from_slice(payload.data.as_slice()).unwrap_or_default())
             .collect();
 
-        let workflow_context = WorkflowContext::new(TaskLauncher::Temporal(Arc::new(context)));
+        let dummy_id = Uuid::new_v4().to_string();
+        let workflow_context = WorkflowContext::new(dummy_id, TaskLauncher::Temporal(Arc::new(context)));
 
         // TODO: Rewrite to just use the core worker, since the SDK doesn't do results
         let _result = workflow.0(workflow_context, args).await?;

@@ -279,7 +279,7 @@ pub enum WorkflowExecutor {
 
 impl WorkflowExecutor {
     #[tracing::instrument(skip(self, registry))]
-    async fn start_workflow(
+    pub(crate) async fn start_workflow(
         self,
         id: String,
         name: &str,
@@ -293,7 +293,7 @@ impl WorkflowExecutor {
                     .workflow_factories
                     .get(name)
                     .ok_or_else(|| anyhow!("Workflow {name} not found"))?;
-                let context = WorkflowContext::new(TaskLauncher::InMemory(registry.clone()));
+                let context = WorkflowContext::new(id, TaskLauncher::InMemory(registry.clone()));
                 let workflow = workflow_factory.builder(args);
                 workflow.execute(context).await?;
 
