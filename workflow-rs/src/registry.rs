@@ -243,7 +243,7 @@ impl WorkflowRegistry {
         Ok(())
     }
 
-    pub async fn start_named_workflow<T: WorkflowFactory + 'static, I: ToString, A: Serialize>(
+    pub async fn start_named_workflow<I: ToString, A: Serialize>(
         self: &Arc<WorkflowRegistry>,
         id: I,
         name: &'static str,
