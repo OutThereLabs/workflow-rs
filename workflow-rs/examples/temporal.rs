@@ -29,8 +29,13 @@ async fn multi_line_echo(
     context: WorkflowContext,
     args: Vec<serde_json::Value>,
 ) -> Result<serde_json::Value, anyhow::Error> {
-    for arg in args {
-        let _: String = context.task(echo, arg.clone()).await?;
+    for (index, arg) in args.iter().enumerate() {
+        if let Some(args) = arg.as_array() {
+            let id = format!("argument-{index}");
+            context.child_workflow_by_name(id, "multi_line_echo", args.clone()).await?;
+        } else {
+            let _: String = context.task(echo, arg.clone()).await?;
+        }
     }
     Ok(serde_json::Value::Null)
 }
@@ -60,7 +65,7 @@ async fn main() {
         .start_workflow(
             workflow_id.clone(),
             &multi_line_echo,
-            vec![json!("Hello"), json!("World")],
+            vec![json!("Hello"), json!("World"), json!(vec![json!("Hello"), json!("Client")])],
         )
         .await
         .expect("Could not start workflow");

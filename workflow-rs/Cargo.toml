@@ -18,12 +18,12 @@ temporal-sdk-core = { git = "https://github.com/temporalio/sdk-core.git", rev = 
 temporal-sdk-core-api = { git = "https://github.com/temporalio/sdk-core.git", rev = "64774d67793694d432ebfd64638c4a806785124c", optional = true }
 tokio = "1.0"
 tracing = "0.1"
+uuid = { version = "1.3", features = ["v7"] }
 workflow-rs-macros = { path = "../workflow-rs-macros", optional = true }
 
 [dev-dependencies]
 tracing-subscriber = "0.3"
 workflow-rs-macros = { path = "../workflow-rs-macros" }
-uuid = { version = "1.3", features = ["v7"] }
 
 [features]
 default = ["temporal", "macros"]
