@@ -59,7 +59,7 @@ impl Debug for WorkflowRegistry {
 
 impl WorkflowRegistry {
     #[cfg(feature = "temporal")]
-    pub async fn from_env<F: FnOnce(&mut WorkflowRegistryBuilder) -> ()>(
+    pub async fn from_env<F: FnOnce(&mut WorkflowRegistryBuilder)>(
         config: F,
     ) -> Result<Arc<WorkflowRegistry>, Error> {
         use temporal_sdk_core::{ClientOptionsBuilder, Url};
@@ -90,7 +90,7 @@ impl WorkflowRegistry {
         Ok(Self::new_in_memory(config))
     }
 
-    pub fn new_in_memory<F: FnOnce(&mut WorkflowRegistryBuilder) -> ()>(
+    pub fn new_in_memory<F: FnOnce(&mut WorkflowRegistryBuilder)>(
         config: F,
     ) -> Arc<WorkflowRegistry> {
         let mut builder = WorkflowRegistryBuilder::default();
@@ -102,7 +102,7 @@ impl WorkflowRegistry {
     }
 
     #[cfg(feature = "temporal")]
-    pub fn new_temporal<F: FnOnce(&mut WorkflowRegistryBuilder) -> ()>(
+    pub fn new_temporal<F: FnOnce(&mut WorkflowRegistryBuilder)>(
         client: RetryClient<Client>,
         config: F,
     ) -> Arc<WorkflowRegistry> {
@@ -236,6 +236,27 @@ impl WorkflowRegistry {
                 id.to_string(),
                 workflow_builder.name(),
                 workflow_builder.queue_name(),
+                args,
+                self.clone(),
+            )
+            .await?;
+        Ok(())
+    }
+
+    pub async fn start_named_workflow<T: WorkflowFactory + 'static, I: ToString, A: Serialize>(
+        self: &Arc<WorkflowRegistry>,
+        id: I,
+        name: &'static str,
+        queue: &'static str,
+        args: Vec<A>,
+    ) -> Result<(), anyhow::Error> {
+        let args = args.into_iter().map(|arg| json!(arg)).collect();
+        self.executor
+            .clone()
+            .start_workflow(
+                id.to_string(),
+                name,
+                queue,
                 args,
                 self.clone(),
             )
