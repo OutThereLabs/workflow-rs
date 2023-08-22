@@ -58,9 +58,11 @@ impl WorkflowWorker {
                 use temporal_sdk_core_api::telemetry::TelemetryOptionsBuilder;
                 use temporal_sdk_core_api::telemetry::TraceExportConfig;
 
+                let log_level = std::env::var("RUST_LOG").unwrap_or("info".to_owned());
+
                 let telemetry_options = TelemetryOptionsBuilder::default()
                     .tracing(TraceExportConfig {
-                        filter: "info".to_owned(),
+                        filter: log_level.clone(),
                         exporter: TraceExporter::Otel(OtelCollectorOptions {
                             url: "grpc://localhost:4317".parse().unwrap(),
                             headers: Default::default(),
@@ -68,7 +70,7 @@ impl WorkflowWorker {
                         }),
                     })
                     .logging(Logger::Console {
-                        filter: "info".to_owned(),
+                        filter: log_level,
                     })
                     .build()?;
                 let runtime = CoreRuntime::new_assume_tokio(telemetry_options)?;
