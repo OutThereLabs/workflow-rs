@@ -171,8 +171,16 @@ impl WorkflowRegistry {
                     worker.run(self.workflow_factories.clone(), self.task_factories.clone());
 
                 tokio::select! {
-                    _ = worker_future => {
-                         tracing::info!("Worker finished");
+                    result = worker_future => {
+                        match result {
+                            Ok(_) => {
+                                tracing::info!("Worker finished");
+                            },
+                            Err(error) => {
+                                tracing::warn!("Error running worker: {}", error);
+                                Err(error)?;
+                            }
+                        }
                     }
                     result = check_future => {
                         match result {
