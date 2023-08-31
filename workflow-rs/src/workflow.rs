@@ -21,6 +21,7 @@ use temporal_sdk_core_api::telemetry::{Logger, OtelCollectorOptions, TraceExport
 use temporal_sdk_core::protos::{
     coresdk::{
         child_workflow::{child_workflow_result::Status as ChildWorkflowResultStatus},
+        workflow_activation::resolve_child_workflow_execution_start::Status as ChildWorkflowStartStatus,
     }
 };
 use uuid::Uuid;
@@ -346,30 +347,43 @@ impl<'a> WorkflowContext {
         };
         let result = context.child_workflow(child_workflow_options).start(context).await;
 
-        if let Some(future) = result.into_started() {
-            let result = future.result().await;
+        match result.status.clone() {
+            ChildWorkflowStartStatus::Succeeded(_s) => {
+                let future = result.into_started().unwrap();
+                let result = future.result().await;
 
-            match result.status {
-                Some(status) => {
-                    match status {
-                        ChildWorkflowResultStatus::Completed(result) => {
-                            tracing::debug!("Result: {result:?}");
-                            Ok(())
-                        },
-                        ChildWorkflowResultStatus::Failed(error) => {
-                            Err(anyhow!("Failed: {error:?}"))
+                match result.status {
+                    Some(status) => {
+                        match status {
+                            ChildWorkflowResultStatus::Completed(result) => {
+                                tracing::debug!("Result: {result:?}");
+                                Ok(())
+                            },
+                            ChildWorkflowResultStatus::Failed(error) => {
+                                Err(anyhow!("Failed: {error:?}"))
+                            }
+                            ChildWorkflowResultStatus::Cancelled(error) => {
+                                Err(anyhow!("Cancelled: {error:?}"))
+                            }
                         }
-                        ChildWorkflowResultStatus::Cancelled(error) => {
-                            Err(anyhow!("Cancelled: {error:?}"))
-                        }
+                    },
+                    None => {
+                        Err(anyhow!("Could not submit child workflow"))
                     }
-                },
-                None => {
-                    Err(anyhow!("Could not submit client workflow"))
+                }
+            },
+            ChildWorkflowStartStatus::Failed(error) => {
+                let cause = error.cause;
+                Err(anyhow!("Failed to start child workflow: {cause}"))
+            }
+            ChildWorkflowStartStatus::Cancelled(error) => {
+                if let Some(failure) = error.failure {
+                    let message = failure.message;
+                    Err(anyhow!("Child workflow start cancelled: {message}"))
+                } else {
+                    Err(anyhow!("Child workflow start cancelled"))
                 }
             }
-        } else {
-            Err(anyhow!("Could not submit client workflow"))
         }
     }
 }

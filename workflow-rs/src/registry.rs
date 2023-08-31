@@ -145,7 +145,7 @@ impl WorkflowRegistry {
                             // WorkflowExecutionStatus::Completed,
                             2 => {
                                 tracing::debug!(
-                                    "WOrkflow {} has status of completed",
+                                    "Workflow {} has status of completed",
                                     workflow_id.to_string()
                                 );
                                 return Ok(());
