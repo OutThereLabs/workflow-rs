@@ -202,6 +202,48 @@ impl<'a> WorkflowContext {
         }
     }
 
+    pub async fn workflow_by_name<T: ToString>(
+        self,
+        id: T,
+        name: &'static str,
+        queue: &'static str,
+        input: Vec<Value>,
+    ) -> Result<(), Error> {
+        match self.task_launcher {
+            TaskLauncher::InMemory(registry) => {
+                Self::in_memory_workflow(id, name, input, registry.clone()).await
+            }
+            #[cfg(feature = "temporal")]
+            TaskLauncher::Temporal { context: _, worker } => match worker {
+                WorkflowWorker::InMemory(_) => {
+                    panic!("Invalid worker")
+                }
+                WorkflowWorker::Temporal {
+                    extensions: _,
+                    client,
+                    queue: _queue,
+                    build_id: _,
+                } => {
+                    let _ = client
+                        .start_workflow(
+                            input
+                                .iter()
+                                .map(|value| value.as_json_payload().unwrap())
+                                .collect(),
+                            queue.to_string(),
+                            id.to_string(),
+                            name.to_owned(),
+                            None,
+                            Default::default(),
+                        )
+                        .await?;
+
+                    Ok(())
+                }
+            },
+        }
+    }
+
     pub async fn child_workflow_by_name<T: ToString>(
         &self,
         id: T,
@@ -210,7 +252,7 @@ impl<'a> WorkflowContext {
     ) -> Result<(), Error> {
         match &self.task_launcher {
             TaskLauncher::InMemory(registry) => {
-                Self::in_memory_child_workflow(id, name, input, registry.clone()).await
+                Self::in_memory_workflow(id, name, input, registry.clone()).await
             }
             #[cfg(feature = "temporal")]
             TaskLauncher::Temporal { context, worker: _ } => {
@@ -248,7 +290,7 @@ impl<'a> WorkflowContext {
         }
     }
 
-    async fn in_memory_child_workflow<T: ToString>(
+    async fn in_memory_workflow<T: ToString>(
         id: T,
         name: &'static str,
         input: Vec<Value>,
