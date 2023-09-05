@@ -14,16 +14,16 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 use temporal_client::WorkflowClientTrait;
-use temporal_sdk::{ActivityOptions, ChildWorkflowOptions, LocalActivityOptions, WfContext, Worker};
+use temporal_sdk::{
+    ActivityOptions, ChildWorkflowOptions, LocalActivityOptions, WfContext, Worker,
+};
 use temporal_sdk_core::protos::coresdk::activity_result::activity_resolution;
 use temporal_sdk_core::protos::coresdk::{activity_result, AsJsonPayloadExt};
-use temporal_sdk_core_api::telemetry::{Logger, OtelCollectorOptions, TraceExporter};
-use temporal_sdk_core::protos::{
-    coresdk::{
-        child_workflow::{child_workflow_result::Status as ChildWorkflowResultStatus},
-        workflow_activation::resolve_child_workflow_execution_start::Status as ChildWorkflowStartStatus,
-    }
+use temporal_sdk_core::protos::coresdk::{
+    child_workflow::child_workflow_result::Status as ChildWorkflowResultStatus,
+    workflow_activation::resolve_child_workflow_execution_start::Status as ChildWorkflowStartStatus,
 };
+use temporal_sdk_core_api::telemetry::{Logger, OtelCollectorOptions, TraceExporter};
 use uuid::Uuid;
 
 #[derive(Clone)]
@@ -44,7 +44,7 @@ impl WorkflowWorker {
         workflow_factories: HashMap<&'static str, &'static dyn WorkflowFactory>,
         task_factories: HashMap<&'static str, &'static dyn TaskFactory>,
     ) -> Result<(), Error> {
-        match self {
+        match self.clone() {
             Self::InMemory(_) => Ok(()),
             #[cfg(feature = "temporal")]
             Self::Temporal {
@@ -70,9 +70,7 @@ impl WorkflowWorker {
                             metric_periodicity: None,
                         }),
                     })
-                    .logging(Logger::Console {
-                        filter: log_level,
-                    })
+                    .logging(Logger::Console { filter: log_level })
                     .build()?;
                 let runtime = CoreRuntime::new_assume_tokio(telemetry_options)?;
 
@@ -93,6 +91,7 @@ impl WorkflowWorker {
                         name.to_owned(),
                         TemporalWorkflowAdapter {
                             workflow: factory.builder(vec![]).handler,
+                            worker: self.clone(),
                         },
                     )
                 }
@@ -112,7 +111,10 @@ impl WorkflowWorker {
 pub enum TaskLauncher {
     InMemory(Arc<WorkflowRegistry>),
     #[cfg(feature = "temporal")]
-    Temporal(Arc<temporal_sdk::WfContext>),
+    Temporal {
+        context: Arc<WfContext>,
+        worker: WorkflowWorker,
+    },
 }
 
 #[derive(Clone)]
@@ -123,7 +125,10 @@ pub struct WorkflowContext {
 
 impl<'a> WorkflowContext {
     pub fn new(workflow_id: String, task_launcher: TaskLauncher) -> Self {
-        Self { workflow_id, task_launcher }
+        Self {
+            workflow_id,
+            task_launcher,
+        }
     }
 
     pub async fn task<F: TaskFactory, I: serde::Serialize, O: serde::de::DeserializeOwned>(
@@ -175,7 +180,7 @@ impl<'a> WorkflowContext {
                 Self::in_memory_task(name, input, registry.clone()).await
             }
             #[cfg(feature = "temporal")]
-            TaskLauncher::Temporal(context) => {
+            TaskLauncher::Temporal { context, worker: _ } => {
                 Self::temporal_task(name, queue, input, context).await
             }
         }
@@ -191,7 +196,7 @@ impl<'a> WorkflowContext {
                 Self::in_memory_task(name, input, registry.clone()).await
             }
             #[cfg(feature = "temporal")]
-            TaskLauncher::Temporal(context) => {
+            TaskLauncher::Temporal { context, worker: _ } => {
                 Self::temporal_local_task(name, input, context).await
             }
         }
@@ -208,7 +213,7 @@ impl<'a> WorkflowContext {
                 Self::in_memory_child_workflow(id, name, input, registry.clone()).await
             }
             #[cfg(feature = "temporal")]
-            TaskLauncher::Temporal(context) => {
+            TaskLauncher::Temporal { context, worker: _ } => {
                 Self::temporal_child_workflow(id, name, input, context).await
             }
         }
@@ -220,7 +225,7 @@ impl<'a> WorkflowContext {
                 tokio::time::sleep(duration).await;
             }
             #[cfg(feature = "temporal")]
-            TaskLauncher::Temporal(context) => {
+            TaskLauncher::Temporal { context, worker: _ } => {
                 let _ = context.timer(duration).await;
             }
         }
@@ -251,14 +256,15 @@ impl<'a> WorkflowContext {
     ) -> Result<(), Error> {
         match registry.workflow_factories.get(name) {
             Some(workflow) => {
-                registry.executor
+                registry
+                    .executor
                     .clone()
                     .start_workflow(
                         id.to_string(),
                         workflow.name(),
                         workflow.queue_name(),
                         input,
-                        registry
+                        registry,
                     )
                     .await?;
                 Ok(())
@@ -266,7 +272,7 @@ impl<'a> WorkflowContext {
             None => Err(anyhow!("No task registed for {name}")),
         }
     }
-    
+
     #[cfg(feature = "temporal")]
     async fn temporal_task(
         name: &'static str,
@@ -339,13 +345,16 @@ impl<'a> WorkflowContext {
             payloads.push(item.as_json_payload()?);
         }
 
-        let child_workflow_options = ChildWorkflowOptions{
+        let child_workflow_options = ChildWorkflowOptions {
             workflow_id: workflow_id.to_string(),
             workflow_type: name.to_string(),
             input: payloads,
             ..Default::default()
         };
-        let result = context.child_workflow(child_workflow_options).start(context).await;
+        let result = context
+            .child_workflow(child_workflow_options)
+            .start(context)
+            .await;
 
         match result.status.clone() {
             ChildWorkflowStartStatus::Succeeded(_s) => {
@@ -353,25 +362,21 @@ impl<'a> WorkflowContext {
                 let result = future.result().await;
 
                 match result.status {
-                    Some(status) => {
-                        match status {
-                            ChildWorkflowResultStatus::Completed(result) => {
-                                tracing::debug!("Result: {result:?}");
-                                Ok(())
-                            },
-                            ChildWorkflowResultStatus::Failed(error) => {
-                                Err(anyhow!("Failed: {error:?}"))
-                            }
-                            ChildWorkflowResultStatus::Cancelled(error) => {
-                                Err(anyhow!("Cancelled: {error:?}"))
-                            }
+                    Some(status) => match status {
+                        ChildWorkflowResultStatus::Completed(result) => {
+                            tracing::debug!("Result: {result:?}");
+                            Ok(())
+                        }
+                        ChildWorkflowResultStatus::Failed(error) => {
+                            Err(anyhow!("Failed: {error:?}"))
+                        }
+                        ChildWorkflowResultStatus::Cancelled(error) => {
+                            Err(anyhow!("Cancelled: {error:?}"))
                         }
                     },
-                    None => {
-                        Err(anyhow!("Could not submit child workflow"))
-                    }
+                    None => Err(anyhow!("Could not submit child workflow")),
                 }
-            },
+            }
             ChildWorkflowStartStatus::Failed(error) => {
                 let cause = error.cause;
                 Err(anyhow!("Failed to start child workflow: {cause}"))
@@ -459,6 +464,7 @@ pub trait WorkflowFactory: Sync + Send {
 #[derive(Clone)]
 pub(crate) struct TemporalWorkflowAdapter {
     workflow: WorkflowRunFunction,
+    worker: WorkflowWorker,
 }
 
 #[cfg(feature = "temporal")]
@@ -466,6 +472,7 @@ impl TemporalWorkflowAdapter {
     async fn adapt(
         workflow: WorkflowRunFunction,
         context: WfContext,
+        worker: WorkflowWorker,
     ) -> Result<temporal_sdk::WfExitValue<()>, anyhow::Error> {
         let args: Vec<serde_json::Value> = context
             .get_args()
@@ -474,7 +481,13 @@ impl TemporalWorkflowAdapter {
             .collect();
 
         let dummy_id = Uuid::new_v4().to_string();
-        let workflow_context = WorkflowContext::new(dummy_id, TaskLauncher::Temporal(Arc::new(context)));
+        let workflow_context = WorkflowContext::new(
+            dummy_id,
+            TaskLauncher::Temporal {
+                context: Arc::new(context),
+                worker,
+            },
+        );
 
         // TODO: Rewrite to just use the core worker, since the SDK doesn't do results
         let _result = workflow.0(workflow_context, args).await?;
@@ -486,7 +499,7 @@ impl TemporalWorkflowAdapter {
 impl From<TemporalWorkflowAdapter> for temporal_sdk::WorkflowFunction {
     fn from(val: TemporalWorkflowAdapter) -> Self {
         temporal_sdk::WorkflowFunction::new(move |context| {
-            TemporalWorkflowAdapter::adapt(val.workflow.clone(), context)
+            TemporalWorkflowAdapter::adapt(val.workflow.clone(), context, val.worker.clone())
         })
     }
 }
