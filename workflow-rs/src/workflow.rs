@@ -23,6 +23,7 @@ use temporal_sdk_core::protos::coresdk::{
     child_workflow::child_workflow_result::Status as ChildWorkflowResultStatus,
     workflow_activation::resolve_child_workflow_execution_start::Status as ChildWorkflowStartStatus,
 };
+use temporal_sdk_core::protos::temporal::api::common::v1::RetryPolicy as TemporalRetryPolicy;
 use temporal_sdk_core_api::telemetry::{Logger, OtelCollectorOptions, TraceExporter};
 use uuid::Uuid;
 
@@ -117,6 +118,35 @@ pub enum TaskLauncher {
     },
 }
 
+pub struct RetryPolicy {
+    pub initial_interval: Duration,
+    pub multiplier: f64,
+}
+
+impl Into<backoff::ExponentialBackoff> for RetryPolicy {
+    fn into(self) -> backoff::ExponentialBackoff {
+        backoff::ExponentialBackoff {
+            initial_interval: self.initial_interval,
+            multiplier: self.multiplier,
+            ..Default::default()
+        }
+    }
+}
+
+#[cfg(feature = "temporal")]
+impl Into<TemporalRetryPolicy> for RetryPolicy {
+    fn into(self) -> TemporalRetryPolicy {
+        TemporalRetryPolicy {
+            initial_interval: Some(prost_wkt_types::Duration {
+                nanos: self.initial_interval.subsec_nanos() as i32,
+                seconds: self.initial_interval.as_secs() as i64,
+            }),
+            backoff_coefficient: self.multiplier,
+            ..Default::default()
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct WorkflowContext {
     pub workflow_id: String,
@@ -141,6 +171,31 @@ impl<'a> WorkflowContext {
                 factory.name(),
                 factory.queue_name(),
                 serde_json::json!(input),
+            )
+            .await?;
+        Ok(serde_json::from_value(value).map_err(|error| {
+            tracing::warn!("Could not encode value: {}", error);
+            error
+        })?)
+    }
+
+    pub async fn task_with_explicit_retry<
+        F: TaskFactory,
+        I: serde::Serialize,
+        O: serde::de::DeserializeOwned,
+        R: Into<RetryPolicy>,
+    >(
+        &self,
+        factory: F,
+        input: I,
+        retry_policy: R,
+    ) -> Result<O, Error> {
+        let value = self
+            .task_by_name_with_explicit_retry(
+                factory.name(),
+                factory.queue_name(),
+                serde_json::json!(input),
+                retry_policy,
             )
             .await?;
         Ok(serde_json::from_value(value).map_err(|error| {
@@ -182,6 +237,37 @@ impl<'a> WorkflowContext {
             #[cfg(feature = "temporal")]
             TaskLauncher::Temporal { context, worker: _ } => {
                 Self::temporal_task(name, queue, input, context).await
+            }
+        }
+    }
+
+    pub async fn task_by_name_with_explicit_retry<R: Into<RetryPolicy>>(
+        &self,
+        name: &'static str,
+        queue: &'static str,
+        input: Value,
+        retry_policy: R,
+    ) -> Result<serde_json::Value, Error> {
+        match &self.task_launcher {
+            TaskLauncher::InMemory(registry) => {
+                Self::in_memory_task_with_explicit_retry(
+                    name,
+                    input,
+                    registry.clone(),
+                    retry_policy.into(),
+                )
+                .await
+            }
+            #[cfg(feature = "temporal")]
+            TaskLauncher::Temporal { context, worker: _ } => {
+                Self::temporal_task_with_explicit_retry(
+                    name,
+                    queue,
+                    input,
+                    context,
+                    retry_policy.into(),
+                )
+                .await
             }
         }
     }
@@ -290,6 +376,28 @@ impl<'a> WorkflowContext {
         }
     }
 
+    async fn in_memory_task_with_explicit_retry(
+        name: &'static str,
+        input: Value,
+        registry: Arc<WorkflowRegistry>,
+        retry_policy: RetryPolicy,
+    ) -> Result<Value, Error> {
+        match registry.task_factories.get(name) {
+            Some(task) => {
+                let backoff: backoff::ExponentialBackoff = retry_policy.into();
+                backoff::future::retry(backoff, || async {
+                    let task_context = TaskContext {
+                        extensions: registry.extensions.clone(),
+                    };
+                    let task = task.builder(input.clone());
+                    Ok(task.call(task_context).await?)
+                })
+                .await
+            }
+            None => Err(anyhow!("No task registed for {name}")),
+        }
+    }
+
     async fn in_memory_workflow<T: ToString>(
         id: T,
         name: &'static str,
@@ -328,6 +436,39 @@ impl<'a> WorkflowContext {
             task_queue: queue.to_owned(),
             start_to_close_timeout: Some(Duration::from_secs(600)),
             schedule_to_start_timeout: Some(Duration::from_secs(600)),
+            ..Default::default()
+        };
+        let result = context.activity(activity_options).await;
+
+        match result
+            .status
+            .expect("Unexpected null on activity result status")
+        {
+            activity_resolution::Status::Completed(activity_result::Success {
+                result: Some(payload),
+            }) => {
+                let value = serde_json::from_slice(payload.data.as_slice()).unwrap();
+                Ok(value)
+            }
+            other => Err(anyhow!("Task failed: {other:#?}")),
+        }
+    }
+
+    #[cfg(feature = "temporal")]
+    async fn temporal_task_with_explicit_retry(
+        name: &'static str,
+        queue: &'static str,
+        input: Value,
+        context: &'a WfContext,
+        retry_policy: RetryPolicy,
+    ) -> Result<Value, Error> {
+        let activity_options = ActivityOptions {
+            input: input.as_json_payload()?,
+            activity_type: name.to_owned(),
+            task_queue: queue.to_owned(),
+            start_to_close_timeout: Some(Duration::from_secs(600)),
+            schedule_to_start_timeout: Some(Duration::from_secs(600)),
+            retry_policy: Some(retry_policy.into()),
             ..Default::default()
         };
         let result = context.activity(activity_options).await;
