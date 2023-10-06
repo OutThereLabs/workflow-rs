@@ -24,7 +24,9 @@ use temporal_sdk_core::protos::coresdk::{
     workflow_activation::resolve_child_workflow_execution_start::Status as ChildWorkflowStartStatus,
 };
 use temporal_sdk_core::protos::temporal::api::common::v1::RetryPolicy as TemporalRetryPolicy;
-use temporal_sdk_core_api::telemetry::{Logger, OtelCollectorOptions, TraceExporter};
+use temporal_sdk_core_api::telemetry::{
+    Logger, MetricsExporter, OtelCollectorOptions, TraceExporter,
+};
 use uuid::Uuid;
 
 #[derive(Clone)]
@@ -71,6 +73,11 @@ impl WorkflowWorker {
                             metric_periodicity: None,
                         }),
                     })
+                    .metrics(MetricsExporter::Otel(OtelCollectorOptions {
+                        url: "grpc://localhost:4317".parse().unwrap(),
+                        headers: Default::default(),
+                        metric_periodicity: None,
+                    }))
                     .logging(Logger::Console { filter: log_level })
                     .build()?;
                 let runtime = CoreRuntime::new_assume_tokio(telemetry_options)?;
