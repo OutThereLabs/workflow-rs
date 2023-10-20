@@ -128,6 +128,7 @@ pub enum TaskLauncher {
 pub struct RetryPolicy {
     pub initial_interval: Duration,
     pub multiplier: f64,
+    pub max_attempts: Option<u32>,
 }
 
 impl Into<backoff::ExponentialBackoff> for RetryPolicy {
@@ -135,6 +136,9 @@ impl Into<backoff::ExponentialBackoff> for RetryPolicy {
         backoff::ExponentialBackoff {
             initial_interval: self.initial_interval,
             multiplier: self.multiplier,
+            max_elapsed_time: self
+                .max_attempts
+                .map(|max_retries| self.initial_interval * max_retries),
             ..Default::default()
         }
     }
@@ -149,6 +153,10 @@ impl Into<TemporalRetryPolicy> for RetryPolicy {
                 seconds: self.initial_interval.as_secs() as i64,
             }),
             backoff_coefficient: self.multiplier,
+            maximum_attempts: self
+                .max_attempts
+                .map(|max_retries| max_retries as i32)
+                .unwrap_or_default(),
             ..Default::default()
         }
     }
